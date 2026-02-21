@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { ZodError } from 'zod';
 import { env } from './env';
 import { healthRoutes } from './routes/health';
@@ -11,6 +13,20 @@ import { transactionRoutes } from './routes/transactions';
 
 export function buildServer() {
   const app = Fastify({ logger: true });
+
+  app.register(swagger, {
+    openapi: {
+      info: {
+        title: 'VelumAtlas API',
+        description: 'REST API for personal finance ledger and portfolio tracking',
+        version: '0.1.0'
+      }
+    }
+  });
+
+  app.register(swaggerUi, {
+    routePrefix: '/docs'
+  });
 
   app.register(cors, {
     origin: true

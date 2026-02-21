@@ -34,6 +34,8 @@ npm run dev
 ```
 
 API base URL: `http://localhost:4000`
+Docs UI: `http://localhost:4000/docs`
+OpenAPI JSON: `http://localhost:4000/docs/json`
 
 ## Endpoints
 
