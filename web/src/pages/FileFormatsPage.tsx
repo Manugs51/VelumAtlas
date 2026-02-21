@@ -1,157 +1,108 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
-import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Modal } from '@/components/ui/modal';
-import { Select } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { DataTablePreview } from '@/features/file-formats/DataTablePreview';
+import { StepColumns } from '@/features/file-formats/steps/StepColumns';
+import { StepProfileFile } from '@/features/file-formats/steps/StepProfileFile';
+import { StepSheetRows } from '@/features/file-formats/steps/StepSheetRows';
+import {
+  canonicalFields,
+  type CanonicalFieldKey,
+  type ColumnMapping,
+  type ColumnPickerTarget,
+  type CurrencyMode,
+  type FileFormatSummary,
+  type ParsedSheet,
+  type RowPickerTarget
+} from '@/features/file-formats/types';
+import { buildColumns, createEmptyColumnMapping, getCanonicalFieldLabel, readWorkbook, toColumnLabel } from '@/features/file-formats/utils';
 
-type ParsedSheet = {
-  name: string;
-  rows: string[][];
-};
-
-type FileFormatSummary = {
-  id: string;
-  profileName: string;
-  sourceFile: string;
-  sheetName: string;
-  headerRowIndex: number;
-  dataStartRowIndex: number;
-  createdAt: string;
-};
-
-type RowPickerTarget = 'header' | 'dataStart' | null;
-
-const canonicalFields = [
-  { key: 'bookingDate', label: 'Booking Date', required: true },
-  { key: 'valueDate', label: 'Value Date', required: false },
-  { key: 'description', label: 'Description', required: true },
-  { key: 'amount', label: 'Amount', required: true },
-  { key: 'currency', label: 'Currency', required: true },
-  { key: 'reference', label: 'Reference', required: false }
-] as const;
-
-type CanonicalFieldKey = (typeof canonicalFields)[number]['key'];
-type ColumnPickerTarget = CanonicalFieldKey | null;
-type ColumnMapping = Record<CanonicalFieldKey, number | null>;
-
-function createEmptyColumnMapping(): ColumnMapping {
-  return {
-    bookingDate: null,
-    valueDate: null,
-    description: null,
-    amount: null,
-    currency: null,
-    reference: null
-  };
-}
-
-function toText(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  return String(value).trim();
-}
-
-function toColumnLabel(index: number): string {
-  let current = index + 1;
-  let label = '';
-  while (current > 0) {
-    const rem = (current - 1) % 26;
-    label = String.fromCharCode(65 + rem) + label;
-    current = Math.floor((current - 1) / 26);
-  }
-  return label;
-}
-
-function getCanonicalFieldLabel(fieldKey: CanonicalFieldKey): string {
-  return canonicalFields.find((field) => field.key === fieldKey)?.label ?? fieldKey;
-}
-
-async function readWorkbook(file: File): Promise<ParsedSheet[]> {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array' });
-
-  return workbook.SheetNames.map((sheetName) => {
-    const sheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-      header: 1,
-      blankrows: false,
-      defval: ''
-    });
-
-    return {
-      name: sheetName,
-      rows: data.map((row) => row.map(toText))
-    };
-  });
-}
+type WizardStep = 1 | 2 | 3;
 
 export function FileFormatsPage() {
   const [formats, setFormats] = useState<FileFormatSummary[]>([]);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1);
+
   const [profileName, setProfileName] = useState('');
   const [fileName, setFileName] = useState('');
   const [sheets, setSheets] = useState<ParsedSheet[]>([]);
-  const [sheetIndex, setSheetIndex] = useState(0);
-  const [headerRowIndex, setHeaderRowIndex] = useState(0);
-  const [dataStartRowIndex, setDataStartRowIndex] = useState(1);
+
+  const [sheetIndex, setSheetIndex] = useState<number | null>(null);
+  const [headerRowIndex, setHeaderRowIndex] = useState<number | null>(null);
+  const [dataStartRowIndex, setDataStartRowIndex] = useState<number | null>(null);
+
+  const [columnMapping, setColumnMapping] = useState<ColumnMapping>(createEmptyColumnMapping());
+  const [currencyMode, setCurrencyMode] = useState<CurrencyMode>('column');
+  const [fixedCurrencyPreset, setFixedCurrencyPreset] = useState('USD');
+  const [fixedCurrencyCustom, setFixedCurrencyCustom] = useState('');
+
   const [status, setStatus] = useState('No file loaded yet.');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [rowPickerTarget, setRowPickerTarget] = useState<RowPickerTarget>(null);
   const [rowPickerSelection, setRowPickerSelection] = useState<number | null>(null);
-  const [columnMapping, setColumnMapping] = useState<ColumnMapping>(createEmptyColumnMapping);
+
   const [columnPickerTarget, setColumnPickerTarget] = useState<ColumnPickerTarget>(null);
   const [columnPickerSelection, setColumnPickerSelection] = useState<number | null>(null);
 
-  const activeSheet = sheets[sheetIndex];
-  const rows = activeSheet?.rows ?? [];
+  const selectedSheet = sheetIndex === null ? null : sheets[sheetIndex] ?? null;
+  const fallbackPreviewSheet = sheets[0] ?? null;
+  const previewSheet = selectedSheet ?? fallbackPreviewSheet;
 
-  const columnCount = useMemo(() => rows.reduce((acc, row) => Math.max(acc, row.length), 0), [rows]);
+  const selectedRows = selectedSheet?.rows ?? [];
+  const previewRows = previewSheet?.rows ?? [];
 
-  const columns = useMemo(() => {
-    const headerRow = rows[headerRowIndex] ?? [];
-    return Array.from({ length: columnCount }, (_, index) => {
-      const value = headerRow[index];
-      const label = value && value.length ? value : `Column ${toColumnLabel(index)}`;
-      return { index, key: toColumnLabel(index), label };
-    });
-  }, [rows, headerRowIndex, columnCount]);
-
-  const previewRows = useMemo(() => rows.slice(dataStartRowIndex, dataStartRowIndex + 12), [rows, dataStartRowIndex]);
-  const rowPickerRows = useMemo(() => rows.slice(0, 40), [rows]);
-  const columnPickerRows = useMemo(() => rows.slice(0, 25), [rows]);
+  const activeRows = wizardStep === 3 ? selectedRows : previewRows;
+  const activeColumns = useMemo(() => buildColumns(activeRows, headerRowIndex), [activeRows, headerRowIndex]);
+  const pickerColumns = useMemo(() => buildColumns(selectedRows, headerRowIndex), [selectedRows, headerRowIndex]);
 
   const mappedColumnIndices = useMemo(() => {
-    return new Set(Object.values(columnMapping).filter((value): value is number => value !== null));
-  }, [columnMapping]);
+    const values = Object.entries(columnMapping)
+      .filter(([fieldKey, value]) => value !== null && (fieldKey !== 'currency' || currencyMode === 'column'))
+      .map(([, value]) => value as number);
+    return new Set(values);
+  }, [columnMapping, currencyMode]);
+
+  const effectiveFixedCurrency =
+    fixedCurrencyPreset === 'CUSTOM' ? fixedCurrencyCustom.trim().toUpperCase() : fixedCurrencyPreset;
 
   const missingRequiredFields = useMemo(() => {
-    return canonicalFields.filter((field) => field.required && columnMapping[field.key] === null);
-  }, [columnMapping]);
+    return canonicalFields.filter((field) => {
+      if (!field.required) return false;
+      if (field.key === 'currency') {
+        return currencyMode === 'column' ? columnMapping.currency === null : effectiveFixedCurrency.length === 0;
+      }
+      return columnMapping[field.key] === null;
+    });
+  }, [columnMapping, currencyMode, effectiveFixedCurrency]);
 
-  useEffect(() => {
-    if (!rows.length) return;
-    if (headerRowIndex >= rows.length) setHeaderRowIndex(0);
-    if (dataStartRowIndex >= rows.length) setDataStartRowIndex(Math.max(0, rows.length - 1));
-  }, [rows, headerRowIndex, dataStartRowIndex]);
+  const canGoToStep2 = profileName.trim().length > 0 && sheets.length > 0;
+  const canGoToStep3 = sheetIndex !== null && headerRowIndex !== null && dataStartRowIndex !== null;
+  const canSave = canGoToStep3 && missingRequiredFields.length === 0;
 
   function resetCreateState() {
+    setWizardStep(1);
     setProfileName('');
     setFileName('');
     setSheets([]);
-    setSheetIndex(0);
-    setHeaderRowIndex(0);
-    setDataStartRowIndex(1);
+    setSheetIndex(null);
+    setHeaderRowIndex(null);
+    setDataStartRowIndex(null);
+    setColumnMapping(createEmptyColumnMapping());
+    setCurrencyMode('column');
+    setFixedCurrencyPreset('USD');
+    setFixedCurrencyCustom('');
     setStatus('No file loaded yet.');
     setRowPickerTarget(null);
     setRowPickerSelection(null);
-    setColumnMapping(createEmptyColumnMapping());
     setColumnPickerTarget(null);
     setColumnPickerSelection(null);
+    setIsSubmitting(false);
   }
 
   function openCreateModal() {
@@ -176,18 +127,48 @@ export function FileFormatsPage() {
       }
 
       setSheets(parsed);
-      setSheetIndex(0);
-      setHeaderRowIndex(0);
-      setDataStartRowIndex(1);
-      setFileName(file.name);
+      setSheetIndex(null);
+      setHeaderRowIndex(null);
+      setDataStartRowIndex(null);
       setColumnMapping(createEmptyColumnMapping());
+      setCurrencyMode('column');
+      setFileName(file.name);
       setStatus(`Loaded ${parsed.length} sheet(s) from ${file.name}.`);
     } catch {
       setStatus('Could not parse file. Please use CSV, XLS, or XLSX.');
     }
   }
 
+  function goNextStep() {
+    if (wizardStep === 1) {
+      if (!canGoToStep2) {
+        setStatus('Provide profile name and upload a valid file before continuing.');
+        return;
+      }
+      setWizardStep(2);
+      setStatus('Choose sheet and row positions.');
+      return;
+    }
+
+    if (wizardStep === 2) {
+      if (!canGoToStep3) {
+        setStatus('You must choose sheet, header row, and data start row to continue.');
+        return;
+      }
+      setWizardStep(3);
+      setStatus('Map required columns and configure currency.');
+    }
+  }
+
+  function goBackStep() {
+    setWizardStep((current) => (current > 1 ? ((current - 1) as WizardStep) : current));
+  }
+
   function openRowPicker(target: Exclude<RowPickerTarget, null>) {
+    if (!selectedSheet) {
+      setStatus('Choose a sheet first.');
+      return;
+    }
     setRowPickerTarget(target);
     setRowPickerSelection(target === 'header' ? headerRowIndex : dataStartRowIndex);
   }
@@ -205,6 +186,10 @@ export function FileFormatsPage() {
   }
 
   function openColumnPicker(fieldKey: CanonicalFieldKey) {
+    if (!selectedSheet) {
+      setStatus('Choose sheet and rows first.');
+      return;
+    }
     setColumnPickerTarget(fieldKey);
     setColumnPickerSelection(columnMapping[fieldKey]);
   }
@@ -216,12 +201,7 @@ export function FileFormatsPage() {
 
   function confirmColumnPickerSelection() {
     if (columnPickerTarget === null || columnPickerSelection === null) return;
-
-    setColumnMapping((current) => ({
-      ...current,
-      [columnPickerTarget]: columnPickerSelection
-    }));
-
+    setColumnMapping((current) => ({ ...current, [columnPickerTarget]: columnPickerSelection }));
     closeColumnPicker();
   }
 
@@ -244,14 +224,14 @@ export function FileFormatsPage() {
   }
 
   function renderColumnPickerActions() {
-    const selected =
+    const selectedLabel =
       columnPickerSelection === null
         ? 'none'
-        : `${toColumnLabel(columnPickerSelection)} - ${columns[columnPickerSelection]?.label ?? 'Unknown column'}`;
+        : `${toColumnLabel(columnPickerSelection)} - ${pickerColumns[columnPickerSelection]?.label ?? 'Unknown column'}`;
 
     return (
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Selected column: {selected}</p>
+        <p className="text-sm text-muted-foreground">Selected column: {selectedLabel}</p>
         <div className="flex gap-2">
           <Button type="button" variant="ghost" onClick={closeColumnPicker}>
             Cancel
@@ -267,12 +247,12 @@ export function FileFormatsPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!activeSheet) {
-      setStatus('Please upload a file first.');
+    if (!selectedSheet || headerRowIndex === null || dataStartRowIndex === null) {
+      setStatus('Sheet and row setup is incomplete.');
       return;
     }
 
-    if (missingRequiredFields.length) {
+    if (!canSave) {
       setStatus(`Map required fields first: ${missingRequiredFields.map((field) => field.label).join(', ')}`);
       return;
     }
@@ -282,11 +262,15 @@ export function FileFormatsPage() {
     const payload = {
       profileName: profileName || 'Untitled profile',
       sourceFile: fileName,
-      sheetName: activeSheet.name,
+      sheetName: selectedSheet.name,
       headerRowIndex,
       dataStartRowIndex,
       columnMapping,
-      sampleRows: previewRows
+      currency: {
+        mode: currencyMode,
+        fixedValue: currencyMode === 'fixed' ? effectiveFixedCurrency : null
+      },
+      sampleRows: selectedRows.slice(dataStartRowIndex, dataStartRowIndex + 12)
     };
 
     try {
@@ -317,6 +301,12 @@ export function FileFormatsPage() {
     closeCreateModal();
   }
 
+  const previewFromRow = wizardStep === 3 ? (dataStartRowIndex ?? 0) : 0;
+  const previewMaxRows = wizardStep === 2 ? 24 : 12;
+  const previewHighlightedRows = wizardStep === 2
+    ? [headerRowIndex, dataStartRowIndex].filter((value): value is number => value !== null)
+    : [];
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#f8f7f2] via-[#fdfcf8] to-[#eef6f7] py-10">
       <div className="container mx-auto max-w-6xl space-y-6">
@@ -340,30 +330,26 @@ export function FileFormatsPage() {
           </CardHeader>
           <CardContent>
             {formats.length ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Profile</TableHead>
-                    <TableHead>File</TableHead>
-                    <TableHead>Sheet</TableHead>
-                    <TableHead>Header Row</TableHead>
-                    <TableHead>Data Start</TableHead>
-                    <TableHead>Created</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {formats.map((format) => (
-                    <TableRow key={format.id}>
-                      <TableCell className="font-medium">{format.profileName}</TableCell>
-                      <TableCell>{format.sourceFile}</TableCell>
-                      <TableCell>{format.sheetName}</TableCell>
-                      <TableCell>{format.headerRowIndex}</TableCell>
-                      <TableCell>{format.dataStartRowIndex}</TableCell>
-                      <TableCell>{new Date(format.createdAt).toLocaleString()}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTablePreview
+                rows={formats.map((format) => [
+                  format.profileName,
+                  format.sourceFile,
+                  format.sheetName,
+                  String(format.headerRowIndex),
+                  String(format.dataStartRowIndex),
+                  new Date(format.createdAt).toLocaleString()
+                ])}
+                columns={[
+                  { index: 0, key: 'A', label: 'Profile' },
+                  { index: 1, key: 'B', label: 'File' },
+                  { index: 2, key: 'C', label: 'Sheet' },
+                  { index: 3, key: 'D', label: 'Header Row' },
+                  { index: 4, key: 'E', label: 'Data Start' },
+                  { index: 5, key: 'F', label: 'Created' }
+                ]}
+                maxRows={formats.length}
+                tableIdPrefix="formats"
+              />
             ) : (
               <p className="text-sm text-muted-foreground">No file formats yet. Create the first one.</p>
             )}
@@ -374,171 +360,92 @@ export function FileFormatsPage() {
       <Modal
         open={isCreateOpen}
         title="Create New File Format"
-        description="Start with profile name and file upload. Then pick rows and required columns."
+        description="Step-by-step setup for profile, row detection, and column mapping."
       >
         <form className="space-y-6" onSubmit={handleSubmit}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="md:col-span-2 grid gap-2">
-              <Label htmlFor="profile-name">Profile Name</Label>
-              <Input
-                id="profile-name"
-                value={profileName}
-                onChange={(event) => setProfileName(event.target.value)}
-                placeholder="Example: BBVA Checking XLS"
+          <div className="flex items-center gap-2 text-sm">
+            {[1, 2, 3].map((step) => (
+              <div
+                key={step}
+                className={cn(
+                  'rounded-full border px-3 py-1',
+                  wizardStep === step ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground'
+                )}
+              >
+                Step {step}
+              </div>
+            ))}
+          </div>
+
+          {wizardStep === 1 ? (
+            <StepProfileFile
+              profileName={profileName}
+              onProfileNameChange={setProfileName}
+              fileName={fileName}
+              onFileChange={handleFileChange}
+            />
+          ) : null}
+
+          {wizardStep === 2 ? (
+            <StepSheetRows
+              sheets={sheets}
+              sheetIndex={sheetIndex}
+              headerRowIndex={headerRowIndex}
+              dataStartRowIndex={dataStartRowIndex}
+              maxRowIndex={Math.max(0, selectedRows.length - 1)}
+              onSheetChange={(nextSheetIndex) => {
+                setSheetIndex(nextSheetIndex);
+                setHeaderRowIndex(null);
+                setDataStartRowIndex(null);
+                setColumnMapping(createEmptyColumnMapping());
+              }}
+              onHeaderRowChange={setHeaderRowIndex}
+              onDataStartRowChange={setDataStartRowIndex}
+              onChooseHeaderRow={() => openRowPicker('header')}
+              onChooseDataStartRow={() => openRowPicker('dataStart')}
+            />
+          ) : null}
+
+          {wizardStep === 3 ? (
+            <StepColumns
+              columnMapping={columnMapping}
+              columnCount={activeColumns.length}
+              columns={activeColumns}
+              currencyMode={currencyMode}
+              fixedCurrencyPreset={fixedCurrencyPreset}
+              fixedCurrencyCustom={fixedCurrencyCustom}
+              onColumnMappingChange={(fieldKey, value) => {
+                setColumnMapping((current) => ({ ...current, [fieldKey]: value }));
+              }}
+              onChooseColumn={openColumnPicker}
+              onCurrencyModeChange={(mode) => {
+                setCurrencyMode(mode);
+                if (mode === 'fixed') {
+                  setColumnMapping((current) => ({ ...current, currency: null }));
+                }
+              }}
+              onFixedCurrencyPresetChange={setFixedCurrencyPreset}
+              onFixedCurrencyCustomChange={setFixedCurrencyCustom}
+            />
+          ) : null}
+
+          <div className="space-y-2">
+            <Label>
+              {wizardStep === 1 ? 'File Preview' : wizardStep === 2 ? 'Sheet / Row Preview' : 'Mapped Columns Preview'}
+            </Label>
+            {activeRows.length ? (
+              <DataTablePreview
+                rows={activeRows}
+                columns={activeColumns}
+                fromRow={previewFromRow}
+                maxRows={previewMaxRows}
+                highlightedRowIndices={previewHighlightedRows}
+                highlightedColumnIndices={wizardStep === 3 ? mappedColumnIndices : undefined}
+                tableIdPrefix="wizard-preview"
               />
-            </div>
-
-            <div className="md:col-span-2 grid gap-2">
-              <Label htmlFor="statement-file">Statement File</Label>
-              <Input id="statement-file" type="file" accept=".csv,.xls,.xlsx" onChange={handleFileChange} />
-              <p className="text-xs text-muted-foreground">{fileName || 'No file selected'}</p>
-            </div>
-
-            {sheets.length ? (
-              <>
-                <div className="grid gap-2">
-                  <Label htmlFor="sheet-select">Sheet</Label>
-                  <Select
-                    id="sheet-select"
-                    value={String(sheetIndex)}
-                    onChange={(event) => {
-                      setSheetIndex(Number(event.target.value));
-                      setHeaderRowIndex(0);
-                      setDataStartRowIndex(1);
-                      setColumnMapping(createEmptyColumnMapping());
-                    }}
-                  >
-                    {sheets.map((sheet, index) => (
-                      <option key={sheet.name} value={index}>
-                        {sheet.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="header-row">Header Row (0-based)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="header-row"
-                      type="number"
-                      min={0}
-                      max={Math.max(0, rows.length - 1)}
-                      value={headerRowIndex}
-                      onChange={(event) => setHeaderRowIndex(Math.max(0, Number(event.target.value) || 0))}
-                    />
-                    <Button type="button" variant="outline" onClick={() => openRowPicker('header')}>
-                      Choose Row
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="data-start-row">Data Start Row (0-based)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="data-start-row"
-                      type="number"
-                      min={0}
-                      max={Math.max(0, rows.length - 1)}
-                      value={dataStartRowIndex}
-                      onChange={(event) => setDataStartRowIndex(Math.max(0, Number(event.target.value) || 0))}
-                    />
-                    <Button type="button" variant="outline" onClick={() => openRowPicker('dataStart')}>
-                      Choose Row
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="md:col-span-2 space-y-4 rounded-lg border border-border p-4">
-                  <div>
-                    <h3 className="text-sm font-semibold">Required Column Mapping</h3>
-                    <p className="text-xs text-muted-foreground">
-                      Pick columns for required fields. Use number input or choose directly from table.
-                    </p>
-                  </div>
-
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {canonicalFields.map((field) => {
-                      const mappedIndex = columnMapping[field.key];
-                      const mappedLabel =
-                        mappedIndex === null
-                          ? 'Unmapped'
-                          : `${toColumnLabel(mappedIndex)} - ${columns[mappedIndex]?.label ?? 'Unknown column'}`;
-
-                      return (
-                        <div key={field.key} className="grid gap-2 rounded-md border border-border p-3">
-                          <Label htmlFor={`column-${field.key}`}>
-                            {field.label}
-                            {field.required ? <span className="ml-1 text-destructive">*</span> : null}
-                          </Label>
-
-                          <div className="flex gap-2">
-                            <Input
-                              id={`column-${field.key}`}
-                              type="number"
-                              min={0}
-                              max={Math.max(0, columnCount - 1)}
-                              value={mappedIndex ?? ''}
-                              onChange={(event) => {
-                                const raw = event.target.value;
-                                const nextValue =
-                                  raw === ''
-                                    ? null
-                                    : Math.min(Math.max(0, Number(raw) || 0), Math.max(0, columnCount - 1));
-                                setColumnMapping((current) => ({
-                                  ...current,
-                                  [field.key]: nextValue
-                                }));
-                              }}
-                            />
-                            <Button type="button" variant="outline" onClick={() => openColumnPicker(field.key)}>
-                              Choose Column
-                            </Button>
-                          </div>
-
-                          <p className="text-xs text-muted-foreground">{mappedLabel}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="md:col-span-2 space-y-2">
-                  <Label>Quick Preview</Label>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-20">Row #</TableHead>
-                        {columns.map((column) => (
-                          <TableHead
-                            key={column.key}
-                            className={cn(mappedColumnIndices.has(column.index) ? 'bg-sky-100 text-foreground' : '')}
-                          >
-                            {column.key}
-                          </TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {previewRows.map((row, rowIndex) => (
-                        <TableRow key={`${dataStartRowIndex + rowIndex}`}>
-                          <TableCell>{dataStartRowIndex + rowIndex}</TableCell>
-                          {columns.map((column) => (
-                            <TableCell
-                              key={`${dataStartRowIndex + rowIndex}-${column.key}`}
-                              className={cn(mappedColumnIndices.has(column.index) ? 'bg-sky-50' : '')}
-                            >
-                              {row[column.index] || ''}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </>
-            ) : null}
+            ) : (
+              <p className="text-sm text-muted-foreground">Upload a file to show table preview.</p>
+            )}
           </div>
 
           <div className="flex items-center justify-between gap-3">
@@ -547,9 +454,25 @@ export function FileFormatsPage() {
               <Button type="button" variant="ghost" onClick={closeCreateModal}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={isSubmitting || !sheets.length || missingRequiredFields.length > 0}>
-                {isSubmitting ? 'Saving...' : 'Save Format'}
-              </Button>
+              {wizardStep > 1 ? (
+                <Button type="button" variant="outline" onClick={goBackStep}>
+                  Back
+                </Button>
+              ) : null}
+
+              {wizardStep < 3 ? (
+                <Button
+                  type="button"
+                  onClick={goNextStep}
+                  disabled={(wizardStep === 1 && !canGoToStep2) || (wizardStep === 2 && !canGoToStep3)}
+                >
+                  Next
+                </Button>
+              ) : (
+                <Button type="submit" disabled={isSubmitting || !canSave}>
+                  {isSubmitting ? 'Saving...' : 'Save Format'}
+                </Button>
+              )}
             </div>
           </div>
         </form>
@@ -564,30 +487,14 @@ export function FileFormatsPage() {
         <div className="space-y-4">
           {renderRowPickerActions()}
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-20">Row #</TableHead>
-                {columns.map((column) => (
-                  <TableHead key={`row-picker-${column.key}`}>{column.key}</TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rowPickerRows.map((row, index) => (
-                <TableRow
-                  key={`picker-row-${index}`}
-                  className={cn('cursor-pointer', rowPickerSelection === index ? 'bg-emerald-100 hover:bg-emerald-100' : '')}
-                  onClick={() => setRowPickerSelection(index)}
-                >
-                  <TableCell className="font-medium">{index}</TableCell>
-                  {columns.map((column) => (
-                    <TableCell key={`row-picker-${index}-${column.key}`}>{row[column.index] || ''}</TableCell>
-                  ))}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTablePreview
+            rows={selectedRows}
+            columns={pickerColumns}
+            maxRows={40}
+            selectedRowIndex={rowPickerSelection}
+            onRowClick={setRowPickerSelection}
+            tableIdPrefix="row-picker"
+          />
 
           {renderRowPickerActions()}
         </div>
@@ -602,45 +509,14 @@ export function FileFormatsPage() {
         <div className="space-y-4">
           {renderColumnPickerActions()}
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-20">Row #</TableHead>
-                {columns.map((column) => (
-                  <TableHead
-                    key={`column-picker-${column.key}`}
-                    className={cn(
-                      'cursor-pointer select-none',
-                      columnPickerSelection === column.index ? 'bg-amber-200 text-foreground' : 'hover:bg-muted/70'
-                    )}
-                    onClick={() => setColumnPickerSelection(column.index)}
-                  >
-                    <span className="block font-semibold">{column.key}</span>
-                    <span className="block text-xs text-muted-foreground">{column.label}</span>
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {columnPickerRows.map((row, rowIndex) => (
-                <TableRow key={`column-picker-row-${rowIndex}`}>
-                  <TableCell className="font-medium">{rowIndex}</TableCell>
-                  {columns.map((column) => (
-                    <TableCell
-                      key={`column-picker-${rowIndex}-${column.key}`}
-                      className={cn(
-                        'cursor-pointer',
-                        columnPickerSelection === column.index ? 'bg-amber-100' : 'hover:bg-muted/50'
-                      )}
-                      onClick={() => setColumnPickerSelection(column.index)}
-                    >
-                      {row[column.index] || ''}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTablePreview
+            rows={selectedRows}
+            columns={pickerColumns}
+            maxRows={24}
+            selectedColumnIndex={columnPickerSelection}
+            onColumnClick={setColumnPickerSelection}
+            tableIdPrefix="column-picker"
+          />
 
           {renderColumnPickerActions()}
         </div>
