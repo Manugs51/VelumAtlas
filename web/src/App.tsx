@@ -6,34 +6,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-
-const canonicalFields = [
-  { key: 'bookingDate', label: 'Booking Date' },
-  { key: 'valueDate', label: 'Value Date' },
-  { key: 'description', label: 'Description' },
-  { key: 'amount', label: 'Amount' },
-  { key: 'currency', label: 'Currency' },
-  { key: 'reference', label: 'Reference' },
-  { key: 'balance', label: 'Balance (Optional)' }
-] as const;
-
-type CanonicalFieldKey = (typeof canonicalFields)[number]['key'];
-type ColumnMapping = Record<CanonicalFieldKey, number | null>;
+import { cn } from '@/lib/utils';
 
 type ParsedSheet = {
   name: string;
   rows: string[][];
 };
 
-const emptyMapping: ColumnMapping = {
-  bookingDate: null,
-  valueDate: null,
-  description: null,
-  amount: null,
-  currency: null,
-  reference: null,
-  balance: null
+type FileFormatSummary = {
+  id: string;
+  profileName: string;
+  sourceFile: string;
+  sheetName: string;
+  headerRowIndex: number;
+  dataStartRowIndex: number;
+  createdAt: string;
 };
+
+type RowPickerTarget = 'header' | 'dataStart' | null;
 
 function toText(value: unknown): string {
   if (value === undefined || value === null) return '';
@@ -63,50 +53,98 @@ async function readWorkbook(file: File): Promise<ParsedSheet[]> {
       defval: ''
     });
 
-    const rows = data.map((row) => row.map(toText));
-    return { name: sheetName, rows };
+    return {
+      name: sheetName,
+      rows: data.map((row) => row.map(toText))
+    };
   });
 }
 
-function App() {
+function Modal({
+  open,
+  title,
+  description,
+  children
+}: {
+  open: boolean;
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+      <div className="w-full max-w-5xl rounded-lg border border-border bg-card shadow-2xl">
+        <div className="border-b border-border px-6 py-4">
+          <h2 className="text-lg font-semibold">{title}</h2>
+          {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+        </div>
+        <div className="max-h-[80vh] overflow-auto p-6">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FileFormatsPage() {
+  const [formats, setFormats] = useState<FileFormatSummary[]>([]);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [fileName, setFileName] = useState('');
   const [sheets, setSheets] = useState<ParsedSheet[]>([]);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [headerRowIndex, setHeaderRowIndex] = useState(0);
   const [dataStartRowIndex, setDataStartRowIndex] = useState(1);
-  const [mapping, setMapping] = useState<ColumnMapping>(emptyMapping);
-  const [status, setStatus] = useState('Upload a file to start.');
+  const [status, setStatus] = useState('No file loaded yet.');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rowPickerTarget, setRowPickerTarget] = useState<RowPickerTarget>(null);
+  const [rowPickerSelection, setRowPickerSelection] = useState<number | null>(null);
 
   const activeSheet = sheets[sheetIndex];
   const rows = activeSheet?.rows ?? [];
 
-  const columnCount = useMemo(() => {
-    return rows.reduce((acc, row) => Math.max(acc, row.length), 0);
-  }, [rows]);
+  const columnCount = useMemo(() => rows.reduce((acc, row) => Math.max(acc, row.length), 0), [rows]);
 
   const columns = useMemo(() => {
     const headerRow = rows[headerRowIndex] ?? [];
     return Array.from({ length: columnCount }, (_, index) => {
-      const label = headerRow[index] || `Column ${toColumnLabel(index)}`;
-      return {
-        index,
-        key: toColumnLabel(index),
-        label
-      };
+      const value = headerRow[index];
+      const label = value && value.length ? value : `Column ${toColumnLabel(index)}`;
+      return { index, key: toColumnLabel(index), label };
     });
   }, [rows, headerRowIndex, columnCount]);
 
-  const previewRows = useMemo(() => {
-    return rows.slice(dataStartRowIndex, dataStartRowIndex + 12);
-  }, [rows, dataStartRowIndex]);
+  const previewRows = useMemo(() => rows.slice(dataStartRowIndex, dataStartRowIndex + 12), [rows, dataStartRowIndex]);
+
+  const pickerRows = useMemo(() => rows.slice(0, 40), [rows]);
 
   useEffect(() => {
     if (!rows.length) return;
     if (headerRowIndex >= rows.length) setHeaderRowIndex(0);
-    if (dataStartRowIndex >= rows.length) setDataStartRowIndex(Math.min(1, rows.length - 1));
+    if (dataStartRowIndex >= rows.length) setDataStartRowIndex(Math.max(0, rows.length - 1));
   }, [rows, headerRowIndex, dataStartRowIndex]);
+
+  function resetCreateState() {
+    setProfileName('');
+    setFileName('');
+    setSheets([]);
+    setSheetIndex(0);
+    setHeaderRowIndex(0);
+    setDataStartRowIndex(1);
+    setStatus('No file loaded yet.');
+    setRowPickerTarget(null);
+    setRowPickerSelection(null);
+  }
+
+  function openCreateModal() {
+    resetCreateState();
+    setIsCreateOpen(true);
+  }
+
+  function closeCreateModal() {
+    setIsCreateOpen(false);
+    resetCreateState();
+  }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -115,7 +153,7 @@ function App() {
     try {
       const parsed = await readWorkbook(file);
       if (!parsed.length) {
-        setStatus('No sheets detected in this file.');
+        setStatus('File read failed: no sheets found.');
         return;
       }
 
@@ -123,25 +161,34 @@ function App() {
       setSheetIndex(0);
       setHeaderRowIndex(0);
       setDataStartRowIndex(1);
-      setMapping(emptyMapping);
       setFileName(file.name);
       setStatus(`Loaded ${parsed.length} sheet(s) from ${file.name}.`);
     } catch {
-      setStatus('Failed to parse file. Try CSV, XLS, or XLSX.');
+      setStatus('Could not parse file. Please use CSV, XLS, or XLSX.');
     }
   }
 
-  function handleMappingChange(field: CanonicalFieldKey, value: string) {
-    setMapping((current) => ({
-      ...current,
-      [field]: value === '' ? null : Number(value)
-    }));
+  function openRowPicker(target: Exclude<RowPickerTarget, null>) {
+    setRowPickerTarget(target);
+    setRowPickerSelection(target === 'header' ? headerRowIndex : dataStartRowIndex);
+  }
+
+  function closeRowPicker() {
+    setRowPickerTarget(null);
+    setRowPickerSelection(null);
+  }
+
+  function confirmRowPickerSelection() {
+    if (rowPickerSelection === null) return;
+    if (rowPickerTarget === 'header') setHeaderRowIndex(rowPickerSelection);
+    if (rowPickerTarget === 'dataStart') setDataStartRowIndex(rowPickerSelection);
+    closeRowPicker();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeSheet) {
-      setStatus('Upload a file before submitting.');
+      setStatus('Please upload a file first.');
       return;
     }
 
@@ -153,7 +200,6 @@ function App() {
       sheetName: activeSheet.name,
       headerRowIndex,
       dataStartRowIndex,
-      mapping,
       sampleRows: previewRows
     };
 
@@ -165,13 +211,33 @@ function App() {
         body: JSON.stringify(payload)
       });
 
-      if (!response.ok) {
-        throw new Error('API returned a non-2xx response');
-      }
+      if (!response.ok) throw new Error('Request failed');
 
-      setStatus('Profile submitted successfully.');
+      const created: FileFormatSummary = {
+        id: crypto.randomUUID(),
+        profileName: payload.profileName,
+        sourceFile: payload.sourceFile,
+        sheetName: payload.sheetName,
+        headerRowIndex: payload.headerRowIndex,
+        dataStartRowIndex: payload.dataStartRowIndex,
+        createdAt: new Date().toISOString()
+      };
+
+      setFormats((current) => [created, ...current]);
+      closeCreateModal();
     } catch {
-      setStatus('API not available yet. Payload prepared correctly for future backend endpoint.');
+      const created: FileFormatSummary = {
+        id: crypto.randomUUID(),
+        profileName: payload.profileName,
+        sourceFile: payload.sourceFile,
+        sheetName: payload.sheetName,
+        headerRowIndex: payload.headerRowIndex,
+        dataStartRowIndex: payload.dataStartRowIndex,
+        createdAt: new Date().toISOString()
+      };
+      setFormats((current) => [created, ...current]);
+      setStatus('API endpoint is not ready yet. Profile kept locally for preview.');
+      closeCreateModal();
     } finally {
       setIsSubmitting(false);
     }
@@ -180,156 +246,262 @@ function App() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#f8f7f2] via-[#fdfcf8] to-[#eef6f7] py-10">
       <div className="container mx-auto max-w-6xl space-y-6">
-        <header className="space-y-2">
-          <p className="inline-block rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Import Profile Builder
-          </p>
-          <h1 className="text-3xl font-semibold tracking-tight">Define Bank/Broker File Format</h1>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Upload a statement file, choose which row starts the data, and map columns to canonical fields.
-          </p>
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <p className="inline-block rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+              Import Profiles
+            </p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight">File Formats</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Define reusable bank or broker statement formats before importing transactions.
+            </p>
+          </div>
+          <Button onClick={openCreateModal}>Create New File Format</Button>
         </header>
 
-        <form className="space-y-6" onSubmit={handleSubmit}>
-          <Card>
-            <CardHeader>
-              <CardTitle>1. File Setup</CardTitle>
-              <CardDescription>Upload CSV/XLS/XLSX and choose sheet/header/data rows.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              <div className="md:col-span-2 grid gap-2">
-                <Label htmlFor="profile-name">Profile Name</Label>
-                <Input
-                  id="profile-name"
-                  value={profileName}
-                  onChange={(event) => setProfileName(event.target.value)}
-                  placeholder="Example: Santander Checking CSV"
-                />
-              </div>
-
-              <div className="md:col-span-2 grid gap-2">
-                <Label htmlFor="statement-file">Statement File</Label>
-                <Input id="statement-file" type="file" accept=".csv,.xls,.xlsx" onChange={handleFileChange} />
-                <p className="text-xs text-muted-foreground">{fileName || 'No file selected'}</p>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="sheet">Sheet</Label>
-                <Select
-                  id="sheet"
-                  value={String(sheetIndex)}
-                  onChange={(event) => {
-                    setSheetIndex(Number(event.target.value));
-                    setHeaderRowIndex(0);
-                    setDataStartRowIndex(1);
-                    setMapping(emptyMapping);
-                  }}
-                  disabled={!sheets.length}
-                >
-                  {sheets.map((sheet, index) => (
-                    <option key={sheet.name} value={index}>
-                      {sheet.name}
-                    </option>
+        <Card>
+          <CardHeader>
+            <CardTitle>Existing Formats</CardTitle>
+            <CardDescription>Saved format definitions for statement imports.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {formats.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Profile</TableHead>
+                    <TableHead>File</TableHead>
+                    <TableHead>Sheet</TableHead>
+                    <TableHead>Header Row</TableHead>
+                    <TableHead>Data Start</TableHead>
+                    <TableHead>Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {formats.map((format) => (
+                    <TableRow key={format.id}>
+                      <TableCell className="font-medium">{format.profileName}</TableCell>
+                      <TableCell>{format.sourceFile}</TableCell>
+                      <TableCell>{format.sheetName}</TableCell>
+                      <TableCell>{format.headerRowIndex}</TableCell>
+                      <TableCell>{format.dataStartRowIndex}</TableCell>
+                      <TableCell>{new Date(format.createdAt).toLocaleString()}</TableCell>
+                    </TableRow>
                   ))}
-                </Select>
-              </div>
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-sm text-muted-foreground">No file formats yet. Create the first one.</p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="header-row">Header Row (0-based)</Label>
-                <Input
-                  id="header-row"
-                  type="number"
-                  min={0}
-                  max={Math.max(rows.length - 1, 0)}
-                  value={headerRowIndex}
-                  onChange={(event) => setHeaderRowIndex(Math.max(0, Number(event.target.value) || 0))}
-                  disabled={!rows.length}
-                />
-              </div>
+      <Modal
+        open={isCreateOpen}
+        title="Create New File Format"
+        description="Start with profile name and file upload. Once read, choose sheet and row positions."
+      >
+        <form className="space-y-6" onSubmit={handleSubmit}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="md:col-span-2 grid gap-2">
+              <Label htmlFor="profile-name">Profile Name</Label>
+              <Input
+                id="profile-name"
+                value={profileName}
+                onChange={(event) => setProfileName(event.target.value)}
+                placeholder="Example: BBVA Checking XLS"
+              />
+            </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="data-start">Data Start Row (0-based)</Label>
-                <Input
-                  id="data-start"
-                  type="number"
-                  min={0}
-                  max={Math.max(rows.length - 1, 0)}
-                  value={dataStartRowIndex}
-                  onChange={(event) => setDataStartRowIndex(Math.max(0, Number(event.target.value) || 0))}
-                  disabled={!rows.length}
-                />
-              </div>
-            </CardContent>
-          </Card>
+            <div className="md:col-span-2 grid gap-2">
+              <Label htmlFor="statement-file">Statement File</Label>
+              <Input id="statement-file" type="file" accept=".csv,.xls,.xlsx" onChange={handleFileChange} />
+              <p className="text-xs text-muted-foreground">{fileName || 'No file selected'}</p>
+            </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>2. Column Mapping</CardTitle>
-              <CardDescription>Map your file columns to the canonical transaction fields.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              {canonicalFields.map((field) => (
-                <div className="grid gap-2" key={field.key}>
-                  <Label htmlFor={`map-${field.key}`}>{field.label}</Label>
+            {sheets.length ? (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="sheet-select">Sheet</Label>
                   <Select
-                    id={`map-${field.key}`}
-                    value={mapping[field.key] === null ? '' : String(mapping[field.key])}
-                    onChange={(event) => handleMappingChange(field.key, event.target.value)}
-                    disabled={!columns.length}
+                    id="sheet-select"
+                    value={String(sheetIndex)}
+                    onChange={(event) => {
+                      setSheetIndex(Number(event.target.value));
+                      setHeaderRowIndex(0);
+                      setDataStartRowIndex(1);
+                    }}
                   >
-                    <option value="">Unmapped</option>
-                    {columns.map((column) => (
-                      <option key={column.key} value={column.index}>
-                        {column.key} - {column.label}
+                    {sheets.map((sheet, index) => (
+                      <option key={sheet.name} value={index}>
+                        {sheet.name}
                       </option>
                     ))}
                   </Select>
                 </div>
-              ))}
-            </CardContent>
-          </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>3. Data Preview</CardTitle>
-              <CardDescription>Preview starts from the selected data row.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {previewRows.length ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-20">Row #</TableHead>
-                      {columns.map((column) => (
-                        <TableHead key={column.key}>{column.key}</TableHead>
-                      ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {previewRows.map((row, rowIndex) => (
-                      <TableRow key={`${dataStartRowIndex + rowIndex}`}>
-                        <TableCell className="font-medium">{dataStartRowIndex + rowIndex}</TableCell>
+                <div className="grid gap-2">
+                  <Label htmlFor="header-row">Header Row (0-based)</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="header-row"
+                      type="number"
+                      min={0}
+                      max={Math.max(0, rows.length - 1)}
+                      value={headerRowIndex}
+                      onChange={(event) => setHeaderRowIndex(Math.max(0, Number(event.target.value) || 0))}
+                    />
+                    <Button type="button" variant="outline" onClick={() => openRowPicker('header')}>
+                      Choose Row
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="data-start-row">Data Start Row (0-based)</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="data-start-row"
+                      type="number"
+                      min={0}
+                      max={Math.max(0, rows.length - 1)}
+                      value={dataStartRowIndex}
+                      onChange={(event) => setDataStartRowIndex(Math.max(0, Number(event.target.value) || 0))}
+                    />
+                    <Button type="button" variant="outline" onClick={() => openRowPicker('dataStart')}>
+                      Choose Row
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2 space-y-2">
+                  <Label>Quick Preview</Label>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-20">Row #</TableHead>
                         {columns.map((column) => (
-                          <TableCell key={`${dataStartRowIndex + rowIndex}-${column.key}`}>{row[column.index] || ''}</TableCell>
+                          <TableHead key={column.key}>{column.key}</TableHead>
                         ))}
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <p className="text-sm text-muted-foreground">No rows to preview yet.</p>
-              )}
-            </CardContent>
-          </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {previewRows.map((row, rowIndex) => (
+                        <TableRow key={`${dataStartRowIndex + rowIndex}`}>
+                          <TableCell>{dataStartRowIndex + rowIndex}</TableCell>
+                          {columns.map((column) => (
+                            <TableCell key={`${dataStartRowIndex + rowIndex}-${column.key}`}>{row[column.index] || ''}</TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            ) : null}
+          </div>
 
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">{status}</p>
-            <Button type="submit" disabled={isSubmitting || !rows.length}>
-              {isSubmitting ? 'Submitting...' : 'Save Import Profile'}
-            </Button>
+            <div className="flex gap-2">
+              <Button type="button" variant="ghost" onClick={closeCreateModal}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitting || !sheets.length}>
+                {isSubmitting ? 'Saving...' : 'Save Format'}
+              </Button>
+            </div>
           </div>
         </form>
-      </div>
+      </Modal>
+
+      <Modal
+        open={rowPickerTarget !== null}
+        title={rowPickerTarget === 'header' ? 'Pick Header Row' : 'Pick Data Start Row'}
+        description="Click any row to highlight it in green, then confirm your selection."
+      >
+        <div className="space-y-4">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-20">Row #</TableHead>
+                {columns.map((column) => (
+                  <TableHead key={`picker-${column.key}`}>{column.key}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pickerRows.map((row, index) => (
+                <TableRow
+                  key={`picker-row-${index}`}
+                  className={cn('cursor-pointer', rowPickerSelection === index ? 'bg-emerald-100 hover:bg-emerald-100' : '')}
+                  onClick={() => setRowPickerSelection(index)}
+                >
+                  <TableCell className="font-medium">{index}</TableCell>
+                  {columns.map((column) => (
+                    <TableCell key={`picker-row-${index}-${column.key}`}>{row[column.index] || ''}</TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Selected row: {rowPickerSelection === null ? 'none' : rowPickerSelection}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={closeRowPicker}>
+                Cancel
+              </Button>
+              <Button onClick={confirmRowPickerSelection} disabled={rowPickerSelection === null}>
+                Confirm Row
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </main>
+  );
+}
+
+function App() {
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    if (window.location.pathname === '/') {
+      window.history.replaceState({}, '', '/fileformats');
+      setPathname('/fileformats');
+    }
+
+    const onPopState = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  if (pathname === '/fileformats') {
+    return <FileFormatsPage />;
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center p-6">
+      <Card className="w-full max-w-xl">
+        <CardHeader>
+          <CardTitle>Page Not Found</CardTitle>
+          <CardDescription>This UI currently lives at /fileformats.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            onClick={() => {
+              window.history.pushState({}, '', '/fileformats');
+              setPathname('/fileformats');
+            }}
+          >
+            Go To File Formats
+          </Button>
+        </CardContent>
+      </Card>
     </main>
   );
 }
