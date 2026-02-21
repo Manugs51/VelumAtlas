@@ -1,0 +1,10 @@
+{
+  "name": "velumatlas",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:api": "npm --prefix ./api run dev",
+    "build:api": "npm --prefix ./api run build",
+    "start:api": "npm --prefix ./api run start"
+  }
+}
