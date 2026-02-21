@@ -10,6 +10,7 @@ import { ownerRoutes } from './routes/owners';
 import { accountRoutes } from './routes/accounts';
 import { instrumentRoutes } from './routes/instruments';
 import { transactionRoutes } from './routes/transactions';
+import { importProfileRoutes } from './routes/importProfiles';
 
 export function buildServer() {
   const app = Fastify({ logger: true });
@@ -52,6 +53,7 @@ export function buildServer() {
       api.register(accountRoutes);
       api.register(instrumentRoutes);
       api.register(transactionRoutes);
+      api.register(importProfileRoutes);
     },
     { prefix: '/api/v1' }
   );
@@ -71,3 +73,4 @@ start().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+

@@ -49,3 +49,5 @@ OpenAPI JSON: `http://localhost:4000/docs/json`
 - `GET /api/v1/transactions`
 - `GET /api/v1/transactions/:id`
 - `POST /api/v1/transactions`
+- `GET /api/v1/import-profiles`
+- `POST /api/v1/import-profiles`
