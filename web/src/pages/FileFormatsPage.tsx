@@ -27,6 +27,30 @@ type FileFormatSummary = {
 
 type RowPickerTarget = 'header' | 'dataStart' | null;
 
+const canonicalFields = [
+  { key: 'bookingDate', label: 'Booking Date', required: true },
+  { key: 'valueDate', label: 'Value Date', required: false },
+  { key: 'description', label: 'Description', required: true },
+  { key: 'amount', label: 'Amount', required: true },
+  { key: 'currency', label: 'Currency', required: true },
+  { key: 'reference', label: 'Reference', required: false }
+] as const;
+
+type CanonicalFieldKey = (typeof canonicalFields)[number]['key'];
+type ColumnPickerTarget = CanonicalFieldKey | null;
+type ColumnMapping = Record<CanonicalFieldKey, number | null>;
+
+function createEmptyColumnMapping(): ColumnMapping {
+  return {
+    bookingDate: null,
+    valueDate: null,
+    description: null,
+    amount: null,
+    currency: null,
+    reference: null
+  };
+}
+
 function toText(value: unknown): string {
   if (value === undefined || value === null) return '';
   return String(value).trim();
@@ -41,6 +65,10 @@ function toColumnLabel(index: number): string {
     current = Math.floor((current - 1) / 26);
   }
   return label;
+}
+
+function getCanonicalFieldLabel(fieldKey: CanonicalFieldKey): string {
+  return canonicalFields.find((field) => field.key === fieldKey)?.label ?? fieldKey;
 }
 
 async function readWorkbook(file: File): Promise<ParsedSheet[]> {
@@ -75,6 +103,9 @@ export function FileFormatsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rowPickerTarget, setRowPickerTarget] = useState<RowPickerTarget>(null);
   const [rowPickerSelection, setRowPickerSelection] = useState<number | null>(null);
+  const [columnMapping, setColumnMapping] = useState<ColumnMapping>(createEmptyColumnMapping);
+  const [columnPickerTarget, setColumnPickerTarget] = useState<ColumnPickerTarget>(null);
+  const [columnPickerSelection, setColumnPickerSelection] = useState<number | null>(null);
 
   const activeSheet = sheets[sheetIndex];
   const rows = activeSheet?.rows ?? [];
@@ -91,7 +122,16 @@ export function FileFormatsPage() {
   }, [rows, headerRowIndex, columnCount]);
 
   const previewRows = useMemo(() => rows.slice(dataStartRowIndex, dataStartRowIndex + 12), [rows, dataStartRowIndex]);
-  const pickerRows = useMemo(() => rows.slice(0, 40), [rows]);
+  const rowPickerRows = useMemo(() => rows.slice(0, 40), [rows]);
+  const columnPickerRows = useMemo(() => rows.slice(0, 25), [rows]);
+
+  const mappedColumnIndices = useMemo(() => {
+    return new Set(Object.values(columnMapping).filter((value): value is number => value !== null));
+  }, [columnMapping]);
+
+  const missingRequiredFields = useMemo(() => {
+    return canonicalFields.filter((field) => field.required && columnMapping[field.key] === null);
+  }, [columnMapping]);
 
   useEffect(() => {
     if (!rows.length) return;
@@ -109,6 +149,9 @@ export function FileFormatsPage() {
     setStatus('No file loaded yet.');
     setRowPickerTarget(null);
     setRowPickerSelection(null);
+    setColumnMapping(createEmptyColumnMapping());
+    setColumnPickerTarget(null);
+    setColumnPickerSelection(null);
   }
 
   function openCreateModal() {
@@ -137,6 +180,7 @@ export function FileFormatsPage() {
       setHeaderRowIndex(0);
       setDataStartRowIndex(1);
       setFileName(file.name);
+      setColumnMapping(createEmptyColumnMapping());
       setStatus(`Loaded ${parsed.length} sheet(s) from ${file.name}.`);
     } catch {
       setStatus('Could not parse file. Please use CSV, XLS, or XLSX.');
@@ -160,6 +204,27 @@ export function FileFormatsPage() {
     closeRowPicker();
   }
 
+  function openColumnPicker(fieldKey: CanonicalFieldKey) {
+    setColumnPickerTarget(fieldKey);
+    setColumnPickerSelection(columnMapping[fieldKey]);
+  }
+
+  function closeColumnPicker() {
+    setColumnPickerTarget(null);
+    setColumnPickerSelection(null);
+  }
+
+  function confirmColumnPickerSelection() {
+    if (columnPickerTarget === null || columnPickerSelection === null) return;
+
+    setColumnMapping((current) => ({
+      ...current,
+      [columnPickerTarget]: columnPickerSelection
+    }));
+
+    closeColumnPicker();
+  }
+
   function renderRowPickerActions() {
     return (
       <div className="flex items-center justify-between">
@@ -178,10 +243,37 @@ export function FileFormatsPage() {
     );
   }
 
+  function renderColumnPickerActions() {
+    const selected =
+      columnPickerSelection === null
+        ? 'none'
+        : `${toColumnLabel(columnPickerSelection)} - ${columns[columnPickerSelection]?.label ?? 'Unknown column'}`;
+
+    return (
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Selected column: {selected}</p>
+        <div className="flex gap-2">
+          <Button type="button" variant="ghost" onClick={closeColumnPicker}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={confirmColumnPickerSelection} disabled={columnPickerSelection === null}>
+            Confirm Column
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     if (!activeSheet) {
       setStatus('Please upload a file first.');
+      return;
+    }
+
+    if (missingRequiredFields.length) {
+      setStatus(`Map required fields first: ${missingRequiredFields.map((field) => field.label).join(', ')}`);
       return;
     }
 
@@ -193,6 +285,7 @@ export function FileFormatsPage() {
       sheetName: activeSheet.name,
       headerRowIndex,
       dataStartRowIndex,
+      columnMapping,
       sampleRows: previewRows
     };
 
@@ -281,7 +374,7 @@ export function FileFormatsPage() {
       <Modal
         open={isCreateOpen}
         title="Create New File Format"
-        description="Start with profile name and file upload. Once read, choose sheet and row positions."
+        description="Start with profile name and file upload. Then pick rows and required columns."
       >
         <form className="space-y-6" onSubmit={handleSubmit}>
           <div className="grid gap-4 md:grid-cols-2">
@@ -312,6 +405,7 @@ export function FileFormatsPage() {
                       setSheetIndex(Number(event.target.value));
                       setHeaderRowIndex(0);
                       setDataStartRowIndex(1);
+                      setColumnMapping(createEmptyColumnMapping());
                     }}
                   >
                     {sheets.map((sheet, index) => (
@@ -356,6 +450,60 @@ export function FileFormatsPage() {
                   </div>
                 </div>
 
+                <div className="md:col-span-2 space-y-4 rounded-lg border border-border p-4">
+                  <div>
+                    <h3 className="text-sm font-semibold">Required Column Mapping</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Pick columns for required fields. Use number input or choose directly from table.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {canonicalFields.map((field) => {
+                      const mappedIndex = columnMapping[field.key];
+                      const mappedLabel =
+                        mappedIndex === null
+                          ? 'Unmapped'
+                          : `${toColumnLabel(mappedIndex)} - ${columns[mappedIndex]?.label ?? 'Unknown column'}`;
+
+                      return (
+                        <div key={field.key} className="grid gap-2 rounded-md border border-border p-3">
+                          <Label htmlFor={`column-${field.key}`}>
+                            {field.label}
+                            {field.required ? <span className="ml-1 text-destructive">*</span> : null}
+                          </Label>
+
+                          <div className="flex gap-2">
+                            <Input
+                              id={`column-${field.key}`}
+                              type="number"
+                              min={0}
+                              max={Math.max(0, columnCount - 1)}
+                              value={mappedIndex ?? ''}
+                              onChange={(event) => {
+                                const raw = event.target.value;
+                                const nextValue =
+                                  raw === ''
+                                    ? null
+                                    : Math.min(Math.max(0, Number(raw) || 0), Math.max(0, columnCount - 1));
+                                setColumnMapping((current) => ({
+                                  ...current,
+                                  [field.key]: nextValue
+                                }));
+                              }}
+                            />
+                            <Button type="button" variant="outline" onClick={() => openColumnPicker(field.key)}>
+                              Choose Column
+                            </Button>
+                          </div>
+
+                          <p className="text-xs text-muted-foreground">{mappedLabel}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="md:col-span-2 space-y-2">
                   <Label>Quick Preview</Label>
                   <Table>
@@ -363,7 +511,12 @@ export function FileFormatsPage() {
                       <TableRow>
                         <TableHead className="w-20">Row #</TableHead>
                         {columns.map((column) => (
-                          <TableHead key={column.key}>{column.key}</TableHead>
+                          <TableHead
+                            key={column.key}
+                            className={cn(mappedColumnIndices.has(column.index) ? 'bg-sky-100 text-foreground' : '')}
+                          >
+                            {column.key}
+                          </TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
@@ -372,7 +525,12 @@ export function FileFormatsPage() {
                         <TableRow key={`${dataStartRowIndex + rowIndex}`}>
                           <TableCell>{dataStartRowIndex + rowIndex}</TableCell>
                           {columns.map((column) => (
-                            <TableCell key={`${dataStartRowIndex + rowIndex}-${column.key}`}>{row[column.index] || ''}</TableCell>
+                            <TableCell
+                              key={`${dataStartRowIndex + rowIndex}-${column.key}`}
+                              className={cn(mappedColumnIndices.has(column.index) ? 'bg-sky-50' : '')}
+                            >
+                              {row[column.index] || ''}
+                            </TableCell>
                           ))}
                         </TableRow>
                       ))}
@@ -389,7 +547,7 @@ export function FileFormatsPage() {
               <Button type="button" variant="ghost" onClick={closeCreateModal}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={isSubmitting || !sheets.length}>
+              <Button type="submit" disabled={isSubmitting || !sheets.length || missingRequiredFields.length > 0}>
                 {isSubmitting ? 'Saving...' : 'Save Format'}
               </Button>
             </div>
@@ -411,12 +569,12 @@ export function FileFormatsPage() {
               <TableRow>
                 <TableHead className="w-20">Row #</TableHead>
                 {columns.map((column) => (
-                  <TableHead key={`picker-${column.key}`}>{column.key}</TableHead>
+                  <TableHead key={`row-picker-${column.key}`}>{column.key}</TableHead>
                 ))}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pickerRows.map((row, index) => (
+              {rowPickerRows.map((row, index) => (
                 <TableRow
                   key={`picker-row-${index}`}
                   className={cn('cursor-pointer', rowPickerSelection === index ? 'bg-emerald-100 hover:bg-emerald-100' : '')}
@@ -424,7 +582,7 @@ export function FileFormatsPage() {
                 >
                   <TableCell className="font-medium">{index}</TableCell>
                   {columns.map((column) => (
-                    <TableCell key={`picker-row-${index}-${column.key}`}>{row[column.index] || ''}</TableCell>
+                    <TableCell key={`row-picker-${index}-${column.key}`}>{row[column.index] || ''}</TableCell>
                   ))}
                 </TableRow>
               ))}
@@ -432,6 +590,59 @@ export function FileFormatsPage() {
           </Table>
 
           {renderRowPickerActions()}
+        </div>
+      </Modal>
+
+      <Modal
+        open={columnPickerTarget !== null}
+        title={`Pick Column For ${columnPickerTarget ? getCanonicalFieldLabel(columnPickerTarget) : ''}`}
+        description="Click a column header or any cell in that column, then confirm your selection."
+        zIndexClassName="z-[70]"
+      >
+        <div className="space-y-4">
+          {renderColumnPickerActions()}
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-20">Row #</TableHead>
+                {columns.map((column) => (
+                  <TableHead
+                    key={`column-picker-${column.key}`}
+                    className={cn(
+                      'cursor-pointer select-none',
+                      columnPickerSelection === column.index ? 'bg-amber-200 text-foreground' : 'hover:bg-muted/70'
+                    )}
+                    onClick={() => setColumnPickerSelection(column.index)}
+                  >
+                    <span className="block font-semibold">{column.key}</span>
+                    <span className="block text-xs text-muted-foreground">{column.label}</span>
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {columnPickerRows.map((row, rowIndex) => (
+                <TableRow key={`column-picker-row-${rowIndex}`}>
+                  <TableCell className="font-medium">{rowIndex}</TableCell>
+                  {columns.map((column) => (
+                    <TableCell
+                      key={`column-picker-${rowIndex}-${column.key}`}
+                      className={cn(
+                        'cursor-pointer',
+                        columnPickerSelection === column.index ? 'bg-amber-100' : 'hover:bg-muted/50'
+                      )}
+                      onClick={() => setColumnPickerSelection(column.index)}
+                    >
+                      {row[column.index] || ''}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          {renderColumnPickerActions()}
         </div>
       </Modal>
     </main>
