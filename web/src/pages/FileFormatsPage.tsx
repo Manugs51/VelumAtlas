@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
+import { ApiError } from '@/lib/apiClient';
+import { createImportProfile, fetchImportProfiles, importProfilesQueryKey } from '@/features/file-formats/api';
 import { DataTablePreview } from '@/features/file-formats/DataTablePreview';
 import { StepColumns } from '@/features/file-formats/steps/StepColumns';
 import { StepProfileFile } from '@/features/file-formats/steps/StepProfileFile';
@@ -15,7 +18,6 @@ import {
   type ColumnMapping,
   type ColumnPickerTarget,
   type CurrencyMode,
-  type FileFormatSummary,
   type ParsedSheet,
   type RowPickerTarget
 } from '@/features/file-formats/types';
@@ -24,7 +26,7 @@ import { buildColumns, createEmptyColumnMapping, getCanonicalFieldLabel, readWor
 type WizardStep = 1 | 2 | 3;
 
 export function FileFormatsPage() {
-  const [formats, setFormats] = useState<FileFormatSummary[]>([]);
+  const queryClient = useQueryClient();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
 
@@ -42,13 +44,28 @@ export function FileFormatsPage() {
   const [fixedCurrencyCustom, setFixedCurrencyCustom] = useState('');
 
   const [status, setStatus] = useState('No file loaded yet.');
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [rowPickerTarget, setRowPickerTarget] = useState<RowPickerTarget>(null);
   const [rowPickerSelection, setRowPickerSelection] = useState<number | null>(null);
 
   const [columnPickerTarget, setColumnPickerTarget] = useState<ColumnPickerTarget>(null);
   const [columnPickerSelection, setColumnPickerSelection] = useState<number | null>(null);
+
+  const {
+    data: formats = [],
+    isLoading: isFormatsLoading,
+    error: formatsError
+  } = useQuery({
+    queryKey: importProfilesQueryKey,
+    queryFn: fetchImportProfiles
+  });
+
+  const createImportProfileMutation = useMutation({
+    mutationFn: createImportProfile,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: importProfilesQueryKey });
+    }
+  });
 
   const selectedSheet = sheetIndex === null ? null : sheets[sheetIndex] ?? null;
   const fallbackPreviewSheet = sheets[0] ?? null;
@@ -102,7 +119,6 @@ export function FileFormatsPage() {
     setRowPickerSelection(null);
     setColumnPickerTarget(null);
     setColumnPickerSelection(null);
-    setIsSubmitting(false);
   }
 
   function openCreateModal() {
@@ -257,8 +273,6 @@ export function FileFormatsPage() {
       return;
     }
 
-    setIsSubmitting(true);
-
     const payload = {
       profileName: profileName || 'Untitled profile',
       sourceFile: fileName,
@@ -274,31 +288,16 @@ export function FileFormatsPage() {
     };
 
     try {
-      const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000';
-      const response = await fetch(`${apiBase}/api/v1/import-profiles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) throw new Error('Request failed');
-    } catch {
-      setStatus('API endpoint is not ready yet. Profile kept locally for preview.');
+      await createImportProfileMutation.mutateAsync(payload);
+      setStatus('Profile saved successfully.');
+      closeCreateModal();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setStatus(`Could not save profile: ${error.message}`);
+        return;
+      }
+      setStatus('Could not save profile due to an unexpected error.');
     }
-
-    const created: FileFormatSummary = {
-      id: crypto.randomUUID(),
-      profileName: payload.profileName,
-      sourceFile: payload.sourceFile,
-      sheetName: payload.sheetName,
-      headerRowIndex: payload.headerRowIndex,
-      dataStartRowIndex: payload.dataStartRowIndex,
-      createdAt: new Date().toISOString()
-    };
-
-    setFormats((current) => [created, ...current]);
-    setIsSubmitting(false);
-    closeCreateModal();
   }
 
   const previewFromRow = wizardStep === 3 ? (dataStartRowIndex ?? 0) : 0;
@@ -329,7 +328,13 @@ export function FileFormatsPage() {
             <CardDescription>Saved format definitions for statement imports.</CardDescription>
           </CardHeader>
           <CardContent>
-            {formats.length ? (
+            {isFormatsLoading ? (
+              <p className="text-sm text-muted-foreground">Loading formats...</p>
+            ) : formatsError ? (
+              <p className="text-sm text-destructive">
+                Could not load formats: {formatsError instanceof ApiError ? formatsError.message : 'Unexpected error'}
+              </p>
+            ) : formats.length ? (
               <DataTablePreview
                 rows={formats.map((format) => [
                   format.profileName,
@@ -469,8 +474,8 @@ export function FileFormatsPage() {
                   Next
                 </Button>
               ) : (
-                <Button type="submit" disabled={isSubmitting || !canSave}>
-                  {isSubmitting ? 'Saving...' : 'Save Format'}
+                <Button type="submit" disabled={createImportProfileMutation.isPending || !canSave}>
+                  {createImportProfileMutation.isPending ? 'Saving...' : 'Save Format'}
                 </Button>
               )}
             </div>
