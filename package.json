@@ -5,6 +5,9 @@
   "scripts": {
     "dev:api": "npm --prefix ./api run dev",
     "build:api": "npm --prefix ./api run build",
-    "start:api": "npm --prefix ./api run start"
+    "start:api": "npm --prefix ./api run start",
+    "test:api": "npm --prefix ./api run test",
+    "test:k6:api": "k6 run tests/k6/api-get-suite.js",
+    "test:k6:browser": "k6 run tests/k6/e2e-fileformats-browser.js"
   }
 }
