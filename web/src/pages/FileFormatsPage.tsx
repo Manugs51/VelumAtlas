@@ -308,7 +308,7 @@ export function FileFormatsPage() {
     : [];
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-[#f8f7f2] via-[#fdfcf8] to-[#eef6f7] py-10">
+    <main className="min-h-screen bg-gradient-to-b from-background via-background to-muted/30 py-10">
       <div className="container mx-auto max-w-6xl space-y-6">
         <header className="flex items-start justify-between gap-4">
           <div>
