@@ -19,6 +19,23 @@
   --destructive-foreground: 0 0% 100%;
 }
 
+.dark {
+  --background: 216 30% 8%;
+  --foreground: 210 20% 95%;
+  --card: 216 27% 12%;
+  --card-foreground: 210 20% 95%;
+  --border: 215 18% 24%;
+  --input: 215 18% 24%;
+  --primary: 191 92% 47%;
+  --primary-foreground: 217 30% 11%;
+  --muted: 216 21% 16%;
+  --muted-foreground: 214 14% 71%;
+  --accent: 214 22% 19%;
+  --accent-foreground: 210 20% 95%;
+  --destructive: 3 82% 58%;
+  --destructive-foreground: 0 0% 100%;
+}
+
 * {
   @apply border-border;
 }
